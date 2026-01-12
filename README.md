@@ -169,4 +169,4 @@ yarn test
 
 # License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0 for new contributions, with existing code under MIT - see the [LICENSE](LICENSE) file for details.
