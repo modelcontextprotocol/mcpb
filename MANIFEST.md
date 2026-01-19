@@ -490,6 +490,24 @@ The `mcp_config` object in the server configuration defines how the implementing
 }
 ```
 
+**Node.js Example (npm + npx):**
+
+For packages published to npm, you can use `npx` to fetch and run the server dynamically instead of bundling `node_modules`:
+
+```json
+"mcp_config": {
+  "command": "npx",
+  "args": ["-y", "--package=@your-org/your-mcp-server", "your-mcp-server"],
+  "env": {
+    "API_KEY": "${user_config.api_key}"
+  }
+}
+```
+
+This pattern creates smaller bundles (< 50 KB vs 50-300 MB) and automatically stays up-to-date with npm releases. The `-y` flag auto-confirms installation, and `--package=<pkg> <bin>` explicitly specifies the package when it has multiple bin entries. See `examples/npx-node/` for a complete example.
+
+**Note:** Claude Desktop ships with Node.js/npm/npx built-in, so this works out-of-the-box. Users need internet access on first launch.
+
 **Binary Example (Cross-Platform):**
 
 ```json

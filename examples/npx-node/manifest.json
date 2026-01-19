@@ -1,0 +1,46 @@
+{
+  "manifest_version": "0.3",
+  "name": "example-npx-mcp",
+  "display_name": "Example npx MCP Server",
+  "version": "1.0.0",
+  "description": "Demonstrates npm+npx deployment pattern for Node.js MCP servers",
+  "author": {
+    "name": "MCP Team"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/modelcontextprotocol/mcpb.git"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "npx",
+      "args": ["-y", "--package=example-npx-mcp", "example-npx-mcp"],
+      "env": {
+        "API_KEY": "${user_config.api_key}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "hello",
+      "description": "Returns a greeting message"
+    }
+  ],
+  "user_config": {
+    "api_key": {
+      "type": "string",
+      "title": "API Key",
+      "description": "Optional API key for demonstration",
+      "sensitive": true,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}

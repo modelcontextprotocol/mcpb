@@ -1,0 +1,20 @@
+{
+  "name": "example-npx-mcp",
+  "version": "1.0.0",
+  "description": "Example MCP server demonstrating npx deployment pattern",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "example-npx-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

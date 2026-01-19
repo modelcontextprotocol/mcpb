@@ -133,6 +133,38 @@ bundle.mcpb (ZIP file)
 - Use `npm ci` or `yarn install --frozen-lockfile` for reproducible builds
 - Server entry point specified in manifest.json's `server.entry_point`
 
+**Node.js Bundles (npm + npx):**
+
+For packages published to npm, you can use `npx` to dynamically fetch and run the package instead of bundling `node_modules`. This creates significantly smaller bundles that automatically stay up-to-date with npm releases.
+
+Requirements:
+- Package must be published to npm with a `bin` entry in `package.json`
+- Claude for macOS and Windows ships with Node.js/npm/npx built-in
+
+Manifest configuration:
+```json
+"mcp_config": {
+  "command": "npx",
+  "args": ["-y", "--package=@your-org/your-mcp-server", "your-mcp-server"],
+  "env": {}
+}
+```
+
+Trade-offs:
+
+| Aspect | Traditional Bundling | npm + npx |
+|--------|---------------------|-----------|
+| Bundle size | 50-300 MB | < 50 KB |
+| First launch | Instant | 30-60s (download) |
+| Updates | Manual rebuild | Automatic from npm |
+| Offline support | Always works | After first run |
+
+When to use:
+- **Use npx** when your package is published to npm and you want automatic updates
+- **Use bundling** when your package is private, unpublished, or requires offline-first support
+
+See `examples/npx-node/` for a complete working example.
+
 **Binary Bundles:**
 
 - Static linking preferred for maximum compatibility
