@@ -2,8 +2,11 @@ import { confirm, input, select } from "@inquirer/prompts";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { basename, join, resolve } from "path";
 
-import { CURRENT_MANIFEST_VERSION } from "../schemas.js";
-import type { McpbManifest } from "../types.js";
+import {
+  DEFAULT_MANIFEST_VERSION,
+  MANIFEST_SCHEMAS,
+} from "../shared/constants.js";
+import type { McpbManifestAny } from "../types.js";
 
 interface PackageJson {
   name?: string;
@@ -449,6 +452,58 @@ export async function promptVisualAssets() {
     },
   });
 
+  const addIconVariants = await confirm({
+    message: "Add theme/size-specific icons array?",
+    default: false,
+  });
+
+  const icons: Array<{
+    src: string;
+    size: string;
+    theme?: string;
+  }> = [];
+
+  if (addIconVariants) {
+    let addMoreIcons = true;
+    while (addMoreIcons) {
+      const iconSrc = await input({
+        message: "Icon source path (relative to manifest):",
+        validate: (value) => {
+          if (!value.trim()) return "Icon path is required";
+          if (value.includes("..")) return "Relative paths cannot include '..'";
+          return true;
+        },
+      });
+
+      const iconSize = await input({
+        message: "Icon size (e.g., 16x16):",
+        validate: (value) => {
+          if (!value.trim()) return "Icon size is required";
+          if (!/^\d+x\d+$/.test(value)) {
+            return "Icon size must be in WIDTHxHEIGHT format (e.g., 128x128)";
+          }
+          return true;
+        },
+      });
+
+      const iconTheme = await input({
+        message: "Icon theme (light, dark, or custom - optional):",
+        default: "",
+      });
+
+      icons.push({
+        src: iconSrc,
+        size: iconSize,
+        ...(iconTheme.trim() ? { theme: iconTheme.trim() } : {}),
+      });
+
+      addMoreIcons = await confirm({
+        message: "Add another icon entry?",
+        default: false,
+      });
+    }
+  }
+
   const addScreenshots = await confirm({
     message: "Add screenshots?",
     default: false,
@@ -475,7 +530,57 @@ export async function promptVisualAssets() {
     }
   }
 
-  return { icon, screenshots };
+  return { icon, icons, screenshots };
+}
+
+export async function promptLocalization() {
+  const configureLocalization = await confirm({
+    message: "Configure localization resources?",
+    default: false,
+  });
+
+  if (!configureLocalization) {
+    return undefined;
+  }
+
+  const placeholderRegex = /\$\{locale\}/i;
+
+  const resourcesPath = await input({
+    message:
+      "Localization resources path (must include ${locale} placeholder):",
+    default: "resources/${locale}.json",
+    validate: (value) => {
+      if (!value.trim()) {
+        return "Resources path is required";
+      }
+      if (value.includes("..")) {
+        return "Relative paths cannot include '..'";
+      }
+      if (!placeholderRegex.test(value)) {
+        return "Path must include a ${locale} placeholder";
+      }
+      return true;
+    },
+  });
+
+  const defaultLocale = await input({
+    message: "Default locale (BCP 47, e.g., en-US):",
+    default: "en-US",
+    validate: (value) => {
+      if (!value.trim()) {
+        return "Default locale is required";
+      }
+      if (!/^[A-Za-z0-9]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(value)) {
+        return "Default locale must follow BCP 47 (e.g., en-US or zh-Hans)";
+      }
+      return true;
+    },
+  });
+
+  return {
+    resources: resourcesPath,
+    default_locale: defaultLocale,
+  };
 }
 
 export async function promptCompatibility(
@@ -721,6 +826,11 @@ export function buildManifest(
   },
   visualAssets: {
     icon: string;
+    icons: Array<{
+      src: string;
+      size: string;
+      theme?: string;
+    }>;
     screenshots: string[];
   },
   serverConfig: {
@@ -767,14 +877,19 @@ export function buildManifest(
     license: string;
     repository?: { type: string; url: string };
   },
-): McpbManifest {
+  manifestVersion: keyof typeof MANIFEST_SCHEMAS = DEFAULT_MANIFEST_VERSION,
+  // localization?: {
+  //   resources: string;
+  //   default_locale: string;
+  // },
+): McpbManifestAny {
   const { name, displayName, version, description, authorName } = basicInfo;
   const { authorEmail, authorUrl } = authorInfo;
   const { serverType, entryPoint, mcp_config } = serverConfig;
   const { keywords, license, repository } = optionalFields;
 
   return {
-    manifest_version: CURRENT_MANIFEST_VERSION,
+    manifest_version: manifestVersion,
     name,
     ...(displayName && displayName !== name
       ? { display_name: displayName }
@@ -791,9 +906,11 @@ export function buildManifest(
     ...(urls.documentation ? { documentation: urls.documentation } : {}),
     ...(urls.support ? { support: urls.support } : {}),
     ...(visualAssets.icon ? { icon: visualAssets.icon } : {}),
+    ...(visualAssets.icons.length > 0 ? { icons: visualAssets.icons } : {}),
     ...(visualAssets.screenshots.length > 0
       ? { screenshots: visualAssets.screenshots }
       : {}),
+    // ...(localization ? { localization } : {}),
     server: {
       type: serverType,
       entry_point: entryPoint,
@@ -829,9 +946,20 @@ export function printNextSteps() {
 export async function initExtension(
   targetPath: string = process.cwd(),
   nonInteractive = false,
+  manifestVersion?: string,
 ): Promise<boolean> {
   const resolvedPath = resolve(targetPath);
   const manifestPath = join(resolvedPath, "manifest.json");
+
+  // Validate manifest version if provided
+  if (manifestVersion && !(manifestVersion in MANIFEST_SCHEMAS)) {
+    console.error(
+      `ERROR: Invalid manifest version "${manifestVersion}". Supported versions: ${Object.keys(MANIFEST_SCHEMAS).join(", ")}`,
+    );
+    return false;
+  }
+  const effectiveManifestVersion = (manifestVersion ||
+    DEFAULT_MANIFEST_VERSION) as keyof typeof MANIFEST_SCHEMAS;
 
   if (existsSync(manifestPath)) {
     if (nonInteractive) {
@@ -876,8 +1004,11 @@ export async function initExtension(
       ? { homepage: "", documentation: "", support: "" }
       : await promptUrls();
     const visualAssets = nonInteractive
-      ? { icon: "", screenshots: [] }
+      ? { icon: "", icons: [], screenshots: [] }
       : await promptVisualAssets();
+    // const localization = nonInteractive
+    //   ? undefined
+    //   : await promptLocalization();
     const serverConfig = nonInteractive
       ? getDefaultServerConfig(packageData)
       : await promptServerConfig(packageData);
@@ -910,6 +1041,7 @@ export async function initExtension(
       compatibility,
       userConfig,
       optionalFields,
+      effectiveManifestVersion,
     );
 
     // Write manifest

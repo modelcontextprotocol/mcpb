@@ -13,8 +13,9 @@ import { basename, join, relative, resolve, sep } from "path";
 
 import { getAllFilesWithCount, readMcpbIgnorePatterns } from "../node/files.js";
 import { validateManifest } from "../node/validate.js";
-import { CURRENT_MANIFEST_VERSION, McpbManifestSchema } from "../schemas.js";
+import { MANIFEST_SCHEMAS } from "../shared/constants.js";
 import { getLogger } from "../shared/log.js";
+import { getManifestVersionFromRawData } from "../shared/manifestVersionResolve.js";
 import { initExtension } from "./init.js";
 
 interface PackOptions {
@@ -92,23 +93,23 @@ export async function packExtension({
   try {
     const manifestContent = readFileSync(manifestPath, "utf-8");
     const manifestData = JSON.parse(manifestContent);
-    manifest = McpbManifestSchema.parse(manifestData);
+    const manifestVersion = getManifestVersionFromRawData(manifestData);
+    if (!manifestVersion) {
+      logger.error(
+        `ERROR: Manifest version mismatch. Expected "${Object.keys(MANIFEST_SCHEMAS).join(" or ")}", found "${manifestVersion}"`,
+      );
+      logger.error(
+        `  Please update the manifest_version in your manifest.json to a supported version`,
+      );
+      return false;
+    }
+
+    manifest = MANIFEST_SCHEMAS[manifestVersion].parse(manifestData);
   } catch (error) {
     logger.error("ERROR: Failed to parse manifest.json");
     if (error instanceof Error) {
       logger.error(`  ${error.message}`);
     }
-    return false;
-  }
-
-  const manifestVersion = manifest.manifest_version || manifest.dxt_version;
-  if (manifestVersion !== CURRENT_MANIFEST_VERSION) {
-    logger.error(
-      `ERROR: Manifest version mismatch. Expected "${CURRENT_MANIFEST_VERSION}", found "${manifestVersion}"`,
-    );
-    logger.error(
-      `  Please update the manifest_version in your manifest.json to "${CURRENT_MANIFEST_VERSION}"`,
-    );
     return false;
   }
 

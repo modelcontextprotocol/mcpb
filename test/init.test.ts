@@ -10,7 +10,7 @@ import {
   getDefaultRepositoryUrl,
   readPackageJson,
 } from "../src/cli/init.js";
-import { CURRENT_MANIFEST_VERSION } from "../src/schemas.js";
+import { DEFAULT_MANIFEST_VERSION } from "../src/shared/constants.js";
 
 // Mock the fs module
 jest.mock("fs", () => ({
@@ -194,6 +194,7 @@ describe("init functions", () => {
         },
         {
           icon: "",
+          icons: [],
           screenshots: [],
         },
         {
@@ -215,10 +216,11 @@ describe("init functions", () => {
           keywords: "",
           license: "",
         },
+        // undefined, // localization
       );
 
       expect(manifest).toEqual({
-        manifest_version: CURRENT_MANIFEST_VERSION,
+        manifest_version: DEFAULT_MANIFEST_VERSION,
         name: "test-extension",
         version: "1.0.0",
         description: "Test description",
@@ -258,6 +260,18 @@ describe("init functions", () => {
         },
         {
           icon: "icon.png",
+          icons: [
+            {
+              src: "assets/icons/icon-16-light.png",
+              size: "16x16",
+              theme: "light",
+            },
+            {
+              src: "assets/icons/icon-16-dark.png",
+              size: "16x16",
+              theme: "dark",
+            },
+          ],
           screenshots: ["screen1.png", "screen2.png"],
         },
         {
@@ -301,10 +315,14 @@ describe("init functions", () => {
           license: "MIT",
           repository: { type: "git", url: "https://github.com/user/repo" },
         },
+        // { // localization
+        //   resources: "resources/${locale}.json",
+        //   default_locale: "en-US",
+        // },
       );
 
       expect(manifest).toEqual({
-        manifest_version: CURRENT_MANIFEST_VERSION,
+        manifest_version: DEFAULT_MANIFEST_VERSION,
         name: "test-extension",
         display_name: "Test Extension",
         version: "1.0.0",
@@ -320,6 +338,18 @@ describe("init functions", () => {
         documentation: "https://docs.example.com",
         support: "https://support.example.com",
         icon: "icon.png",
+        icons: [
+          {
+            src: "assets/icons/icon-16-light.png",
+            size: "16x16",
+            theme: "light",
+          },
+          {
+            src: "assets/icons/icon-16-dark.png",
+            size: "16x16",
+            theme: "dark",
+          },
+        ],
         screenshots: ["screen1.png", "screen2.png"],
         server: {
           type: "python",
