@@ -36,3 +36,21 @@ export const MANIFEST_SCHEMAS_LOOSE = {
   "0.3": LooseManifestSchemaV0_3,
   "0.4": LooseManifestSchemaV0_4,
 } as const;
+
+/**
+ * Extension verification warning messages for UI display
+ */
+export const EXTENSION_VERIFICATION_WARNINGS = {
+  /**
+   * Banner warning shown above the extension preview modal to inform users
+   * that the developer name is not verified by Anthropic
+   */
+  UNVERIFIED_DEVELOPER_BANNER:
+    "The developer name shown below has not been verified by Anthropic.",
+
+  /**
+   * Main installation warning message shown in the extension preview modal
+   */
+  INSTALL_WARNING:
+    "Installing will grant this extension access to everything on your computer. Ensure you trust the source of this extension before installation.",
+} as const;
