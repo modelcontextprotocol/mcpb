@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "fs";
 import ignore from "ignore";
 import { join, relative, sep } from "path";
 
@@ -94,9 +94,19 @@ export function getAllFiles(
       continue;
     }
 
-    const stat = statSync(filePath);
+    const stat = lstatSync(filePath);
 
-    if (stat.isDirectory()) {
+    if (stat.isSymbolicLink() && !existsSync(filePath)) {
+      // Broken (dangling) symlink: statSync would throw ENOENT. Skip it and
+      // keep packing instead of aborting the whole bundle.
+      console.warn(`Warning: Skipping broken symlink: ${relativePath}`);
+      continue;
+    }
+
+    // Valid symlinks are still followed, preserving the previous behavior.
+    const targetStat = stat.isSymbolicLink() ? statSync(filePath) : stat;
+
+    if (targetStat.isDirectory()) {
       getAllFiles(filePath, baseDir, fileList, additionalPatterns);
     } else {
       // Use forward slashes in zip file paths
@@ -137,9 +147,20 @@ export function getAllFilesWithCount(
       continue;
     }
 
-    const stat = statSync(filePath);
+    const stat = lstatSync(filePath);
 
-    if (stat.isDirectory()) {
+    if (stat.isSymbolicLink() && !existsSync(filePath)) {
+      // Broken (dangling) symlink: statSync would throw ENOENT. Skip it and
+      // keep packing instead of aborting the whole bundle.
+      console.warn(`Warning: Skipping broken symlink: ${relativePath}`);
+      ignoredCount++;
+      continue;
+    }
+
+    // Valid symlinks are still followed, preserving the previous behavior.
+    const targetStat = stat.isSymbolicLink() ? statSync(filePath) : stat;
+
+    if (targetStat.isDirectory()) {
       const result = getAllFilesWithCount(
         filePath,
         baseDir,
@@ -153,7 +174,7 @@ export function getAllFilesWithCount(
       const zipPath = relativePath.split(sep).join("/");
       fileList[zipPath] = {
         data: readFileSync(filePath),
-        mode: stat.mode,
+        mode: targetStat.mode,
       };
     }
   }
