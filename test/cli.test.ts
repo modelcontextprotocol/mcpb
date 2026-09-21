@@ -221,6 +221,61 @@ describe("DXT CLI", () => {
       expect(fs.existsSync(packedFilePath)).toBe(true);
     });
 
+    it("should skip a broken symlink instead of failing with ENOENT", () => {
+      const symlinkDir = join(__dirname, "temp-symlink-test");
+      const symlinkPackedPath = join(__dirname, "test-symlink.dxt");
+      const symlinkUnpackedDir = join(__dirname, "temp-symlink-unpack");
+
+      try {
+        // Fixture directory containing a broken (dangling) symlink
+        fs.mkdirSync(symlinkDir, { recursive: true });
+        fs.writeFileSync(
+          join(symlinkDir, "manifest.json"),
+          JSON.stringify({
+            manifest_version: DEFAULT_MANIFEST_VERSION,
+            name: "Test Symlink",
+            version: "1.0.0",
+            description: "Test broken symlink handling",
+            author: {
+              name: "MCPB",
+            },
+            server: {
+              type: "node",
+              entry_point: "server/index.js",
+              mcp_config: {
+                command: "node",
+              },
+            },
+          }),
+        );
+        fs.mkdirSync(join(symlinkDir, "server"), { recursive: true });
+        fs.writeFileSync(join(symlinkDir, "server", "index.js"), "// fixture");
+        fs.symlinkSync("./nowhere", join(symlinkDir, "dangling"));
+
+        // pack must succeed (exit 0) and write the bundle
+        execSync(`node ${cliPath} pack ${symlinkDir} ${symlinkPackedPath}`, {
+          encoding: "utf-8",
+        });
+        expect(fs.existsSync(symlinkPackedPath)).toBe(true);
+
+        // the broken symlink must not end up in the bundle
+        execSync(
+          `node ${cliPath} unpack ${symlinkPackedPath} ${symlinkUnpackedDir}`,
+          { encoding: "utf-8" },
+        );
+        expect(fs.existsSync(join(symlinkUnpackedDir, "manifest.json"))).toBe(
+          true,
+        );
+        expect(fs.existsSync(join(symlinkUnpackedDir, "dangling"))).toBe(false);
+      } finally {
+        fs.rmSync(symlinkDir, { recursive: true, force: true });
+        fs.rmSync(symlinkUnpackedDir, { recursive: true, force: true });
+        if (fs.existsSync(symlinkPackedPath)) {
+          fs.unlinkSync(symlinkPackedPath);
+        }
+      }
+    });
+
     it("should unpack an extension", () => {
       execSync(`node ${cliPath} unpack ${packedFilePath} ${unpackedDir}`, {
         encoding: "utf-8",
