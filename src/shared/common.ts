@@ -6,7 +6,7 @@ export const McpbUserConfigValuesSchema = z.record(
 );
 
 export const McpbSignatureInfoSchema = z.strictObject({
-  status: z.enum(["signed", "unsigned", "self-signed"]),
+  status: z.enum(["signed", "unsigned", "self-signed", "invalid", "untrusted"]),
   publisher: z.string().optional(),
   issuer: z.string().optional(),
   valid_from: z.string().optional(),

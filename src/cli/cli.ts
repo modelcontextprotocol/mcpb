@@ -280,7 +280,13 @@ program
           );
           console.log(`Fingerprint: ${result.fingerprint}`);
         } else {
-          console.error(`ERROR: Extension is not signed`);
+          const errorMessage =
+            result.status === "unsigned"
+              ? "Extension is not signed"
+              : result.status === "invalid"
+                ? "Signature is invalid"
+                : "Signature is valid, but the certificate is not trusted";
+          console.error(`ERROR: ${errorMessage}`);
           process.exit(1);
         }
       } catch (error) {
@@ -330,8 +336,14 @@ program
           );
           console.log(`  Fingerprint: ${signatureInfo.fingerprint}`);
           console.log(`  Status: Valid (self-signed)`);
-        } else {
+        } else if (signatureInfo.status === "unsigned") {
           console.log(`\nWARNING: Not signed`);
+        } else if (signatureInfo.status === "invalid") {
+          console.log(`\nWARNING: Signature is invalid`);
+        } else {
+          console.log(
+            `\nWARNING: Signature is valid, but the certificate is not trusted`,
+          );
         }
       } catch (error) {
         console.log(

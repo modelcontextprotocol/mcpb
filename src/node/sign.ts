@@ -41,69 +41,39 @@ export function signMcpbFile(
     readFileSync(path, "utf-8"),
   );
 
-  // Create PKCS#7 signed data
-  const p7 = forge.pkcs7.createSignedData();
-  p7.content = forge.util.createBuffer(mcpbContent);
+  const initialSignature = createPkcs7Signature(
+    mcpbContent,
+    certificatePem,
+    privateKeyPem,
+    intermediatePems,
+  );
+  let signatureBlockLength = createSignatureBlock(initialSignature).length;
 
-  // Parse and add certificates
-  const signingCert = forge.pki.certificateFromPem(certificatePem);
-  const privateKey = forge.pki.privateKeyFromPem(privateKeyPem);
-
-  p7.addCertificate(signingCert);
-
-  // Add intermediate certificates
-  if (intermediatePems) {
-    for (const pem of intermediatePems) {
-      p7.addCertificate(forge.pki.certificateFromPem(pem));
-    }
-  }
-
-  // Add signer
-  p7.addSigner({
-    key: privateKey,
-    certificate: signingCert,
-    digestAlgorithm: forge.pki.oids.sha256,
-    authenticatedAttributes: [
-      {
-        type: forge.pki.oids.contentType,
-        value: forge.pki.oids.data,
-      },
-      {
-        type: forge.pki.oids.messageDigest,
-        // Value will be auto-populated
-      },
-      {
-        type: forge.pki.oids.signingTime,
-        // Value will be auto-populated with current time
-      },
-    ],
-  });
-
-  // Sign with detached signature
-  p7.sign({ detached: true });
-
-  // Convert to DER format
-  const asn1 = forge.asn1.toDer(p7.toAsn1());
-  const pkcs7Signature = Buffer.from(asn1.getBytes(), "binary");
-
-  // Create signature block with PKCS#7 data
-  const signatureBlock = createSignatureBlock(pkcs7Signature);
-
-  // Update ZIP EOCD comment_length to include signature block
-  // This ensures strict ZIP parsers accept the signed file
-  const updatedContent = Buffer.from(mcpbContent);
-  const eocdOffset = findEocdOffset(updatedContent);
-  if (eocdOffset !== -1) {
-    const currentCommentLength = updatedContent.readUInt16LE(eocdOffset + 20);
-    updatedContent.writeUInt16LE(
-      currentCommentLength + signatureBlock.length,
-      eocdOffset + 20,
+  for (let attempts = 0; attempts < 3; attempts++) {
+    const updatedContent = updateEocdCommentLength(
+      mcpbContent,
+      signatureBlockLength,
     );
+    const signature = createPkcs7Signature(
+      updatedContent,
+      certificatePem,
+      privateKeyPem,
+      intermediatePems,
+    );
+    const signatureBlock = createSignatureBlock(signature);
+
+    if (signatureBlock.length !== signatureBlockLength) {
+      signatureBlockLength = signatureBlock.length;
+      continue;
+    }
+
+    // Append signature block to MCPB file
+    const signedContent = Buffer.concat([updatedContent, signatureBlock]);
+    writeFileSync(mcpbPath, signedContent);
+    return;
   }
 
-  // Append signature block to MCPB file
-  const signedContent = Buffer.concat([updatedContent, signatureBlock]);
-  writeFileSync(mcpbPath, signedContent);
+  throw new Error("Failed to stabilize MCPB signature block length");
 }
 
 /**
@@ -126,67 +96,40 @@ export async function verifyMcpbFile(
     }
 
     // Parse PKCS#7 signature
-    const asn1 = forge.asn1.fromDer(pkcs7Signature.toString("binary"));
-    const p7Message = forge.pkcs7.messageFromAsn1(asn1);
+    let p7Message: ReturnType<typeof forge.pkcs7.messageFromAsn1>;
+    try {
+      const asn1 = forge.asn1.fromDer(pkcs7Signature.toString("binary"));
+      p7Message = forge.pkcs7.messageFromAsn1(asn1);
+    } catch {
+      return { status: "invalid" };
+    }
 
     // Verify it's signed data and cast to correct type
     if (
       !("type" in p7Message) ||
       p7Message.type !== forge.pki.oids.signedData
     ) {
-      return { status: "unsigned" };
+      return { status: "invalid" };
     }
 
-    // Now we know it's PkcsSignedData. The types are incorrect, so we'll
-    // fix them there
-    const p7 = p7Message as unknown as forge.pkcs7.PkcsSignedData & {
-      signerInfos: Array<{
-        authenticatedAttributes: Array<{
-          type: string;
-          value: unknown;
-        }>;
-      }>;
-      verify: (options?: { authenticatedAttributes?: boolean }) => boolean;
-    };
+    const p7 = p7Message as forge.pkcs7.PkcsSignedData;
 
     // Extract certificates from PKCS#7
     const certificates = p7.certificates || [];
     if (certificates.length === 0) {
-      return { status: "unsigned" };
+      return { status: "invalid" };
     }
 
     // Get the signing certificate (first one)
     const signingCert = certificates[0];
 
-    // Verify PKCS#7 signature
-    const contentBuf = forge.util.createBuffer(originalContent);
-
-    try {
-      p7.verify({ authenticatedAttributes: true });
-
-      // Also verify the content matches
-      const signerInfos = p7.signerInfos;
-      const signerInfo = signerInfos?.[0];
-      if (signerInfo) {
-        const md = forge.md.sha256.create();
-        md.update(contentBuf.getBytes());
-        const digest = md.digest().getBytes();
-
-        // Find the message digest attribute
-        let messageDigest = null;
-        for (const attr of signerInfo.authenticatedAttributes) {
-          if (attr.type === forge.pki.oids.messageDigest) {
-            messageDigest = attr.value;
-            break;
-          }
-        }
-
-        if (!messageDigest || messageDigest !== digest) {
-          return { status: "unsigned" };
-        }
-      }
-    } catch (error) {
-      return { status: "unsigned" };
+    const signatureValid = await verifyPkcs7Signature(
+      pkcs7Signature,
+      originalContent,
+      fileContent.length - originalContent.length,
+    );
+    if (!signatureValid) {
+      return { status: "invalid" };
     }
 
     // Convert forge certificate to PEM for OS verification
@@ -195,21 +138,23 @@ export async function verifyMcpbFile(
       .slice(1)
       .map((cert) => Buffer.from(forge.pki.certificateToPem(cert)));
 
-    // Verify certificate chain against OS trust store
-    const chainValid = await verifyCertificateChain(
-      Buffer.from(certPem),
-      intermediatePems,
-    );
-
-    if (!chainValid) {
-      // Signature is valid but certificate is not trusted
-      return { status: "unsigned" };
-    }
-
     // Extract certificate info
     const isSelfSigned =
       signingCert.issuer.getField("CN")?.value ===
       signingCert.subject.getField("CN")?.value;
+
+    if (!isSelfSigned) {
+      // Verify certificate chain against OS trust store
+      const chainValid = await verifyCertificateChain(
+        Buffer.from(certPem),
+        intermediatePems,
+      );
+
+      if (!chainValid) {
+        // Signature is valid but certificate is not trusted
+        return { status: "untrusted" };
+      }
+    }
 
     return {
       status: isSelfSigned ? "self-signed" : "signed",
@@ -228,6 +173,183 @@ export async function verifyMcpbFile(
   } catch (error) {
     throw new Error(`Failed to verify MCPB file: ${error}`);
   }
+}
+
+function createPkcs7Signature(
+  content: Buffer,
+  certificatePem: string,
+  privateKeyPem: string,
+  intermediatePems?: string[],
+): Buffer {
+  const p7 = forge.pkcs7.createSignedData();
+  p7.content = forge.util.createBuffer(content);
+
+  const signingCert = forge.pki.certificateFromPem(certificatePem);
+  const privateKey = forge.pki.privateKeyFromPem(privateKeyPem);
+
+  p7.addCertificate(signingCert);
+
+  if (intermediatePems) {
+    for (const pem of intermediatePems) {
+      p7.addCertificate(forge.pki.certificateFromPem(pem));
+    }
+  }
+
+  p7.addSigner({
+    key: privateKey,
+    certificate: signingCert,
+    digestAlgorithm: forge.pki.oids.sha256,
+    authenticatedAttributes: [
+      {
+        type: forge.pki.oids.contentType,
+        value: forge.pki.oids.data,
+      },
+      {
+        type: forge.pki.oids.messageDigest,
+        // Value will be auto-populated
+      },
+      {
+        type: forge.pki.oids.signingTime,
+        // Value will be auto-populated with current time
+      },
+    ],
+  });
+
+  p7.sign({ detached: true });
+
+  const asn1 = forge.asn1.toDer(p7.toAsn1());
+  return Buffer.from(asn1.getBytes(), "binary");
+}
+
+function updateEocdCommentLength(
+  content: Buffer,
+  signatureBlockLength: number,
+): Buffer {
+  const updatedContent = Buffer.from(content);
+  const eocdOffset = findEocdOffset(updatedContent);
+  if (eocdOffset === -1) {
+    return updatedContent;
+  }
+
+  const currentCommentLength = updatedContent.readUInt16LE(eocdOffset + 20);
+  const updatedCommentLength = currentCommentLength + signatureBlockLength;
+  if (updatedCommentLength > 0xffff) {
+    throw new Error("Signature block exceeds ZIP comment length limit");
+  }
+
+  updatedContent.writeUInt16LE(updatedCommentLength, eocdOffset + 20);
+  return updatedContent;
+}
+
+async function verifyPkcs7Signature(
+  pkcs7Signature: Buffer,
+  originalContent: Buffer,
+  signatureBlockLength: number,
+): Promise<boolean> {
+  let tempDir: string | null = null;
+
+  try {
+    tempDir = await mkdtemp(join(tmpdir(), "mcpb-pkcs7-"));
+    const signaturePath = join(tempDir, "signature.der");
+    const contentPath = join(tempDir, "content.bin");
+    const outputPath = join(tempDir, "verified-content.bin");
+
+    await writeFile(signaturePath, pkcs7Signature);
+
+    for (const content of getSignatureContentCandidates(
+      originalContent,
+      signatureBlockLength,
+    )) {
+      await writeFile(contentPath, content);
+
+      try {
+        if (process.platform === "win32") {
+          const psCommand = `
+            $ErrorActionPreference = 'Stop'
+            $content = [System.IO.File]::ReadAllBytes('${escapePowerShellString(contentPath)}')
+            $signature = [System.IO.File]::ReadAllBytes('${escapePowerShellString(signaturePath)}')
+            $contentInfo = New-Object System.Security.Cryptography.Pkcs.ContentInfo -ArgumentList @(,$content)
+            $signedCms = New-Object System.Security.Cryptography.Pkcs.SignedCms -ArgumentList $contentInfo, $true
+            $signedCms.Decode($signature)
+            $signedCms.CheckSignature($true)
+          `.trim();
+
+          await execFileAsync("powershell.exe", [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            psCommand,
+          ]);
+        } else {
+          await execFileAsync("openssl", [
+            "cms",
+            "-verify",
+            "-inform",
+            "DER",
+            "-in",
+            signaturePath,
+            "-content",
+            contentPath,
+            "-noverify",
+            "-binary",
+            "-out",
+            outputPath,
+          ]);
+        }
+        return true;
+      } catch (error) {
+        if (!isChildProcessExit(error)) {
+          throw error;
+        }
+        // Older MCPB signers patched the EOCD comment length after signing.
+        // Try the pre-patch bytes before treating the signature as invalid.
+      }
+    }
+
+    return false;
+  } finally {
+    if (tempDir) {
+      try {
+        await rm(tempDir, { recursive: true, force: true });
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  }
+}
+
+function isChildProcessExit(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    typeof (error as NodeJS.ErrnoException).code === "number"
+  );
+}
+
+function getSignatureContentCandidates(
+  originalContent: Buffer,
+  signatureBlockLength: number,
+): Buffer[] {
+  const candidates = [originalContent];
+  const eocdOffset = findEocdOffset(originalContent);
+
+  if (eocdOffset !== -1) {
+    const storedCommentLength = originalContent.readUInt16LE(eocdOffset + 20);
+    if (storedCommentLength >= signatureBlockLength) {
+      const prePatchContent = Buffer.from(originalContent);
+      prePatchContent.writeUInt16LE(
+        storedCommentLength - signatureBlockLength,
+        eocdOffset + 20,
+      );
+      candidates.push(prePatchContent);
+    }
+  }
+
+  return candidates;
+}
+
+function escapePowerShellString(value: string): string {
+  return value.replace(/'/g, "''");
 }
 
 /**
@@ -346,6 +468,9 @@ export async function verifyCertificateChain(
         ]);
         return true;
       } catch (error) {
+        if (!isChildProcessExit(error)) {
+          throw error;
+        }
         return false;
       }
     } else if (process.platform === "win32") {
@@ -410,10 +535,16 @@ export async function verifyCertificateChain(
         ]);
         return true;
       } catch (error) {
+        if (!isChildProcessExit(error)) {
+          throw error;
+        }
         return false;
       }
     }
   } catch (error) {
+    if (!isChildProcessExit(error)) {
+      throw error;
+    }
     return false;
   } finally {
     if (tempDir) {
