@@ -96,15 +96,20 @@ export async function verifyMcpbFile(
     }
 
     // Parse PKCS#7 signature
-    const asn1 = forge.asn1.fromDer(pkcs7Signature.toString("binary"));
-    const p7Message = forge.pkcs7.messageFromAsn1(asn1);
+    let p7Message: ReturnType<typeof forge.pkcs7.messageFromAsn1>;
+    try {
+      const asn1 = forge.asn1.fromDer(pkcs7Signature.toString("binary"));
+      p7Message = forge.pkcs7.messageFromAsn1(asn1);
+    } catch {
+      return { status: "invalid" };
+    }
 
     // Verify it's signed data and cast to correct type
     if (
       !("type" in p7Message) ||
       p7Message.type !== forge.pki.oids.signedData
     ) {
-      return { status: "unsigned" };
+      return { status: "invalid" };
     }
 
     const p7 = p7Message as forge.pkcs7.PkcsSignedData;
@@ -112,7 +117,7 @@ export async function verifyMcpbFile(
     // Extract certificates from PKCS#7
     const certificates = p7.certificates || [];
     if (certificates.length === 0) {
-      return { status: "unsigned" };
+      return { status: "invalid" };
     }
 
     // Get the signing certificate (first one)
@@ -121,9 +126,10 @@ export async function verifyMcpbFile(
     const signatureValid = await verifyPkcs7Signature(
       pkcs7Signature,
       originalContent,
+      fileContent.length - originalContent.length,
     );
     if (!signatureValid) {
-      return { status: "unsigned" };
+      return { status: "invalid" };
     }
 
     // Convert forge certificate to PEM for OS verification
@@ -146,7 +152,7 @@ export async function verifyMcpbFile(
 
       if (!chainValid) {
         // Signature is valid but certificate is not trusted
-        return { status: "unsigned" };
+        return { status: "untrusted" };
       }
     }
 
@@ -238,6 +244,7 @@ function updateEocdCommentLength(
 async function verifyPkcs7Signature(
   pkcs7Signature: Buffer,
   originalContent: Buffer,
+  signatureBlockLength: number,
 ): Promise<boolean> {
   let tempDir: string | null = null;
 
@@ -248,43 +255,57 @@ async function verifyPkcs7Signature(
     const outputPath = join(tempDir, "verified-content.bin");
 
     await writeFile(signaturePath, pkcs7Signature);
-    await writeFile(contentPath, originalContent);
 
-    if (process.platform === "win32") {
-      const psCommand = `
-        $ErrorActionPreference = 'Stop'
-        $content = [System.IO.File]::ReadAllBytes('${escapePowerShellString(contentPath)}')
-        $signature = [System.IO.File]::ReadAllBytes('${escapePowerShellString(signaturePath)}')
-        $contentInfo = New-Object System.Security.Cryptography.Pkcs.ContentInfo -ArgumentList @(,$content)
-        $signedCms = New-Object System.Security.Cryptography.Pkcs.SignedCms -ArgumentList $contentInfo, $true
-        $signedCms.Decode($signature)
-        $signedCms.CheckSignature($true)
-      `.trim();
+    for (const content of getSignatureContentCandidates(
+      originalContent,
+      signatureBlockLength,
+    )) {
+      await writeFile(contentPath, content);
 
-      await execFileAsync("powershell.exe", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        psCommand,
-      ]);
-    } else {
-      await execFileAsync("openssl", [
-        "cms",
-        "-verify",
-        "-inform",
-        "DER",
-        "-in",
-        signaturePath,
-        "-content",
-        contentPath,
-        "-noverify",
-        "-binary",
-        "-out",
-        outputPath,
-      ]);
+      try {
+        if (process.platform === "win32") {
+          const psCommand = `
+            $ErrorActionPreference = 'Stop'
+            $content = [System.IO.File]::ReadAllBytes('${escapePowerShellString(contentPath)}')
+            $signature = [System.IO.File]::ReadAllBytes('${escapePowerShellString(signaturePath)}')
+            $contentInfo = New-Object System.Security.Cryptography.Pkcs.ContentInfo -ArgumentList @(,$content)
+            $signedCms = New-Object System.Security.Cryptography.Pkcs.SignedCms -ArgumentList $contentInfo, $true
+            $signedCms.Decode($signature)
+            $signedCms.CheckSignature($true)
+          `.trim();
+
+          await execFileAsync("powershell.exe", [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            psCommand,
+          ]);
+        } else {
+          await execFileAsync("openssl", [
+            "cms",
+            "-verify",
+            "-inform",
+            "DER",
+            "-in",
+            signaturePath,
+            "-content",
+            contentPath,
+            "-noverify",
+            "-binary",
+            "-out",
+            outputPath,
+          ]);
+        }
+        return true;
+      } catch (error) {
+        if (!isChildProcessExit(error)) {
+          throw error;
+        }
+        // Older MCPB signers patched the EOCD comment length after signing.
+        // Try the pre-patch bytes before treating the signature as invalid.
+      }
     }
-    return true;
-  } catch {
+
     return false;
   } finally {
     if (tempDir) {
@@ -295,6 +316,36 @@ async function verifyPkcs7Signature(
       }
     }
   }
+}
+
+function isChildProcessExit(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    typeof (error as NodeJS.ErrnoException).code === "number"
+  );
+}
+
+function getSignatureContentCandidates(
+  originalContent: Buffer,
+  signatureBlockLength: number,
+): Buffer[] {
+  const candidates = [originalContent];
+  const eocdOffset = findEocdOffset(originalContent);
+
+  if (eocdOffset !== -1) {
+    const storedCommentLength = originalContent.readUInt16LE(eocdOffset + 20);
+    if (storedCommentLength >= signatureBlockLength) {
+      const prePatchContent = Buffer.from(originalContent);
+      prePatchContent.writeUInt16LE(
+        storedCommentLength - signatureBlockLength,
+        eocdOffset + 20,
+      );
+      candidates.push(prePatchContent);
+    }
+  }
+
+  return candidates;
 }
 
 function escapePowerShellString(value: string): string {
@@ -417,6 +468,9 @@ export async function verifyCertificateChain(
         ]);
         return true;
       } catch (error) {
+        if (!isChildProcessExit(error)) {
+          throw error;
+        }
         return false;
       }
     } else if (process.platform === "win32") {
@@ -481,10 +535,16 @@ export async function verifyCertificateChain(
         ]);
         return true;
       } catch (error) {
+        if (!isChildProcessExit(error)) {
+          throw error;
+        }
         return false;
       }
     }
   } catch (error) {
+    if (!isChildProcessExit(error)) {
+      throw error;
+    }
     return false;
   } finally {
     if (tempDir) {

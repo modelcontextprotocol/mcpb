@@ -36,6 +36,52 @@ const CA_KEY = path.join(TEST_DIR, "ca.key");
 const SIGNED_CERT = path.join(TEST_DIR, "signed.crt");
 const SIGNED_KEY = path.join(TEST_DIR, "signed.key");
 
+function signMcpbFileWithLegacyEocd(pathToFile: string) {
+  const content = fs.readFileSync(pathToFile);
+  const p7 = forge.pkcs7.createSignedData();
+  p7.content = forge.util.createBuffer(content);
+
+  const certificate = forge.pki.certificateFromPem(
+    fs.readFileSync(SELF_SIGNED_CERT, "utf-8"),
+  );
+  const privateKey = forge.pki.privateKeyFromPem(
+    fs.readFileSync(SELF_SIGNED_KEY, "utf-8"),
+  );
+  p7.addCertificate(certificate);
+  p7.addSigner({
+    key: privateKey,
+    certificate,
+    digestAlgorithm: forge.pki.oids.sha256,
+    authenticatedAttributes: [
+      { type: forge.pki.oids.contentType, value: forge.pki.oids.data },
+      { type: forge.pki.oids.messageDigest },
+      { type: forge.pki.oids.signingTime },
+    ],
+  });
+  p7.sign({ detached: true });
+
+  const signature = Buffer.from(
+    forge.asn1.toDer(p7.toAsn1()).getBytes(),
+    "binary",
+  );
+  const signatureLength = Buffer.alloc(4);
+  signatureLength.writeUInt32LE(signature.length, 0);
+  const signatureBlock = Buffer.concat([
+    Buffer.from("MCPB_SIG_V1", "utf-8"),
+    signatureLength,
+    signature,
+    Buffer.from("MCPB_SIG_END", "utf-8"),
+  ]);
+
+  const eocdOffset = content.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  expect(eocdOffset).toBeGreaterThanOrEqual(0);
+  content.writeUInt16LE(
+    content.readUInt16LE(eocdOffset + 20) + signatureBlock.length,
+    eocdOffset + 20,
+  );
+  fs.writeFileSync(pathToFile, Buffer.concat([content, signatureBlock]));
+}
+
 /**
  * Generate a self-signed certificate for testing
  */
@@ -348,6 +394,20 @@ async function testSelfSignedSigning() {
 }
 
 /**
+ * Test signatures produced before the signer began patching the EOCD first.
+ */
+async function testLegacySignedFile() {
+  const testFile = path.join(TEST_DIR, "test-legacy-signed.dxt");
+  fs.copyFileSync(TEST_MCPB, testFile);
+  signMcpbFileWithLegacyEocd(testFile);
+
+  const result = await verifyMcpbFile(testFile);
+  expect(result.status).toBe("self-signed");
+
+  fs.unlinkSync(testFile);
+}
+
+/**
  * Test signing with CA-signed certificate
  */
 async function testCASignedSigning() {
@@ -364,7 +424,7 @@ async function testCASignedSigning() {
   const result = await verifyMcpbFile(testFile);
 
   // CA-signed status depends on whether test CA is trusted by OS
-  expect(["signed", "unsigned"]).toContain(result.status);
+  expect(result.status).toBe("untrusted");
 
   // Clean up
   fs.unlinkSync(testFile);
@@ -389,7 +449,7 @@ async function testTamperingDetection() {
 
   // Try to verify - should fail
   const result = await verifyMcpbFile(testFile);
-  expect(result.status).toBe("unsigned");
+  expect(result.status).toBe("invalid");
 
   // Clean up
   fs.unlinkSync(testFile);
@@ -450,6 +510,10 @@ describe("MCPB Signing E2E Tests", () => {
 
   it("should sign and verify with self-signed certificate", async () => {
     await testSelfSignedSigning();
+  });
+
+  it("should verify files signed before the EOCD length fix", async () => {
+    await testLegacySignedFile();
   });
 
   it("should sign and verify with CA-signed certificate", async () => {
