@@ -5,7 +5,7 @@ import forge from "node-forge";
 import { tmpdir } from "os";
 import { join } from "path";
 import { promisify } from "util";
-import type { z } from "zod";
+import type { z } from "zod/v3";
 
 import type { McpbSignatureInfoSchema } from "../shared/common.js";
 

@@ -1,5 +1,5 @@
 // v0.4: Adds UV runtime support for Python extensions
-import * as z from "zod";
+import * as z from "zod/v3";
 
 export const MANIFEST_VERSION = "0.4";
 

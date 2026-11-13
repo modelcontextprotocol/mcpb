@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import type { z } from "zod/v3";
 
 import type { Logger, McpbManifestAny } from "../types.js";
 import type { McpbUserConfigValuesSchema } from "./common.js";

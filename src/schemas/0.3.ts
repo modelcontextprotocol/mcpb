@@ -1,5 +1,5 @@
 // WIP: This schema is under development and not yet finalized
-import * as z from "zod";
+import * as z from "zod/v3";
 
 export const MANIFEST_VERSION = "0.3";
 

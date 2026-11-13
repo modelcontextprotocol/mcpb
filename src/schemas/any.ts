@@ -1,4 +1,4 @@
-import * as z from "zod";
+import * as z from "zod/v3";
 
 import * as v0_1 from "./0.1.js";
 import * as v0_2 from "./0.2.js";
